@@ -1,0 +1,7 @@
+UPSTREAM_DNS: 8.8.8.8
+SINKHOLE_IP: 0.0.0.0
+BLOCKLIST_URL: "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+BLOCKLIST_REFRESH_INTERVAL: 3600
+WEB_DASHBOARD_PORT: 8080
+DNS_PORT: 53
+DNS_HOST: 0.0.0.0

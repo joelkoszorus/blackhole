@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DNS Sinkhole Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        .container {
+            max-width: 900px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #0056b3;
+            text-align: center;
+        }
+        h2 {
+            color: #0056b3;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+            margin-top: 20px;
+        }
+        .stats, .controls, .logs {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fdfdff;
+        }
+        .stat-item {
+            display: inline-block;
+            margin-right: 20px;
+            font-size: 1.1em;
+        }
+        .stat-item strong {
+            color: #007bff;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        textarea, input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box; /* Include padding and border in the element's total width and height */
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        pre {
+            background-color: #eee;
+            padding: 10px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 300px;
+            overflow-y: scroll;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>DNS Sinkhole Dashboard</h1>
+
+        <div class="stats">
+            <h2>Statistics</h2>
+            <div class="stat-item">Total Queries: <strong><span id="totalQueries">0</span></strong></div>
+            <div class="stat-item">Blocked Queries: <strong><span id="blockedQueries">0</span></strong></div>
+            <div class="stat-item">Blocklist Size: <strong><span id="blocklistSize">0</span></strong></div>
+        </div>
+
+        <div class="controls">
+            <h2>Custom Lists</h2>
+            <label for="allowlist">Allowlist (one domain per line):</label>
+            <textarea id="allowlist" rows="5"></textarea>
+            <button onclick="updateAllowlist()">Update Allowlist</button>
+
+            <label for="denylist" style="margin-top: 15px;">Denylist (one domain per line):</label>
+            <textarea id="denylist" rows="5"></textarea>
+            <button onclick="updateDenylist()">Update Denylist</button>
+        </div>
+
+        <div class="logs">
+            <h2>Live DNS Logs</h2>
+            <pre id="dnsLogs"></pre>
+        </div>
+    </div>
+
+    <script>
+        function updateAllowlist() {
+            const domains = document.getElementById('allowlist').value.split('\n').map(d => d.trim()).filter(d => d);
+            fetch('/api/allowlist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ domains: domains })
+            }).then(response => response.json()).then(data => {
+                alert(data.message);
+                fetchStats();
+            });
+        }
+
+        function updateDenylist() {
+            const domains = document.getElementById('denylist').value.split('\n').map(d => d.trim()).filter(d => d);
+            fetch('/api/denylist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ domains: domains })
+            }).then(response => response.json()).then(data => {
+                alert(data.message);
+                fetchStats();
+            });
+        }
+
+        function fetchStats() {
+            fetch('/api/stats')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('totalQueries').textContent = data.total_queries;
+                    document.getElementById('blockedQueries').textContent = data.blocked_queries;
+                    document.getElementById('blocklistSize').textContent = data.blocklist_size;
+                    document.getElementById('allowlist').value = data.allowlist.join('\n');
+                    document.getElementById('denylist').value = data.denylist.join('\n');
+                });
+        }
+
+        function fetchLogs() {
+            fetch('/api/logs')
+                .then(response => response.json())
+                .then(data => {
+                    const logsElement = document.getElementById('dnsLogs');
+                    logsElement.textContent = data.logs.join('\n');
+                    logsElement.scrollTop = logsElement.scrollHeight; // Scroll to bottom
+                });
+        }
+
+        // Fetch stats and logs initially and then every few seconds
+        fetchStats();
+        fetchLogs();
+        setInterval(fetchStats, 3000); // Refresh stats every 3 seconds
+        setInterval(fetchLogs, 1000);  // Refresh logs every 1 second
+    </script>
+</body>
+</html>
