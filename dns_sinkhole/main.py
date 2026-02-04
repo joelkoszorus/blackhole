@@ -77,7 +77,7 @@ def download_blocklist():
         print(f"Blocklist downloaded and updated. {len(BLOCKLIST)} domains loaded.")
     except requests.exceptions.RequestException as e:
         print(f"Error downloading blocklist: {e}", file=sys.stderr)
-        traceback.print_exc()
+        traceback.print_exc(file=sys.stderr)
     except Exception as e:
         print(f"Error processing blocklist: {e}", file=sys.stderr)
         traceback.print_exc()
@@ -110,14 +110,21 @@ def dns_response(data, addr):
         dns_logs.append(log_entry)
     print(log_entry)
 
-    def create_sinkhole_response(req):
+    def create_sinkhole_response(req, qname):
         response = message.make_response(req)
         response.set_rcode(0) # NOERROR
         answer = rrset.from_text(f'{qname}.', 60, 'IN', 'A', CONFIG['SINKHOLE_IP'])
         response.answer.append(answer)
         return response.to_wire()
+    # DENYLIST, check BLOCKLIST
+    if qname in DENYLIST:
+        with stats_lock:
+            blocked_queries += 1
+            log_entry = f"{time.strftime('%H:%M:%S')} - DENYLIST BLOCKED: {qname}"
+            dns_logs.append(log_entry)
+        print(log_entry)
+        return create_sinkhole_response(request, qname)
 
-    # Check ALLOWLIST first (highest priority for allowing)
     if qname in ALLOWLIST:
         with stats_lock:
             log_entry = f"{time.strftime('%H:%M:%S')} - ALLOWED: {qname} (Overriding deny/block lists)"
@@ -125,23 +132,14 @@ def dns_response(data, addr):
         print(log_entry)
         # Fall through to forwarding logic
 
-    # Else, check DENYLIST (explicitly blocked by user)
-    elif qname in DENYLIST:
-        with stats_lock:
-            blocked_queries += 1
-            log_entry = f"{time.strftime('%H:%M:%S')} - DENYLIST BLOCKED: {qname}"
-            dns_logs.append(log_entry)
-        print(log_entry)
-        return create_sinkhole_response(request)
-
-    # Else, check BLOCKLIST (downloaded blocklist)
+    # Check BLOCKLIST (downloaded blocklist)
     elif qname in BLOCKLIST:
         with stats_lock:
             blocked_queries += 1
             log_entry = f"{time.strftime('%H:%M:%S')} - BLOCKLIST BLOCKED: {qname}"
             dns_logs.append(log_entry)
         print(log_entry)
-        return create_sinkhole_response(request)
+        return create_sinkhole_response(request, qname)
 
     # Forward the query to the upstream DNS server
     try:

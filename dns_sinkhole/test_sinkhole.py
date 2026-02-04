@@ -176,11 +176,11 @@ malicious.net
         mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 Not Found")
         mock_requests_get.return_value = mock_response
 
-        # Capture print output
-        with patch('sys.stdout', new=StringIO()) as fake_out:
+        # Capture stderr output
+        with patch('sys.stderr', new=StringIO()) as fake_err:
             # Act
             main.download_blocklist()
-            output = fake_out.getvalue()
+            output = fake_err.getvalue()
 
         # Assert
         self.assertIn("Error downloading blocklist: 404 Not Found", output)
