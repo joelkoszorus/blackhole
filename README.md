@@ -1,4 +1,4 @@
-# DNS Sinkhole Project
+# blackhole 🕳️
 
 This project implements a simple DNS sinkhole with a web-based dashboard for management and monitoring. A DNS sinkhole works by intercepting DNS queries for known malicious domains and returning a safe, non-routable IP address (like `0.0.0.0`) instead of the actual malicious IP. This prevents devices using the sinkhole from connecting to harmful sites.
 
