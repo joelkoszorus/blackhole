@@ -64,11 +64,11 @@ def download_blocklist():
             
             parts = line.split()
             if len(parts) >= 2 and (parts[0] == '0.0.0.0' or parts[0] == '127.0.0.1'):
-                domain = parts[1].strip()
+                domain = parts[1].strip().lower()
                 if domain:
                     new_blocklist.add(domain)
             elif len(parts) == 1: # Just a domain on a line
-                domain = parts[0].strip()
+                domain = parts[0].strip().lower()
                 if domain:
                     new_blocklist.add(domain)
 
@@ -81,6 +81,31 @@ def download_blocklist():
     except Exception as e:
         print(f"Error processing blocklist: {e}", file=sys.stderr)
         traceback.print_exc()
+
+def is_domain_blocked_hierarchical(qname, denylist, allowlist, blocklist):
+    """
+    Checks if a domain or any of its parent domains are in the DENYLIST, ALLOWLIST, or BLOCKLIST.
+    Returns the action taken ("DENYLIST", "ALLOWLIST", "BLOCKLIST") and the matched domain,
+    or (None, None) if no match.
+    """
+    parts = qname.split('.')
+    # Iterate from the full domain to its parent domains (e.g., a.b.c.com -> b.c.com -> c.com)
+    for i in range(len(parts)):
+        sub_domain = ".".join(parts[i:])
+        
+        # Check DENYLIST first (highest priority for blocking)
+        if sub_domain in denylist:
+            return "DENYLIST", sub_domain
+        
+        # Check ALLOWLIST (overrides blocklist)
+        if sub_domain in allowlist:
+            return "ALLOWLIST", sub_domain
+            
+        # Check BLOCKLIST
+        if sub_domain in blocklist:
+            return "BLOCKLIST", sub_domain
+            
+    return None, None # Not blocked or allowed by any list
 
 def refresh_blocklist_periodically():
     download_blocklist()
@@ -101,7 +126,7 @@ def dns_response(data, addr):
         return None
 
     qname_obj = request.question[0].name
-    qname = qname_obj.to_text(omit_final_dot=True)
+    qname = qname_obj.to_text(omit_final_dot=True).lower()
     qtype = request.question[0].rdtype
 
     log_entry = f"{time.strftime('%H:%M:%S')} - Query from {addr[0]} for {qname} (Type: {rdatatype.to_text(qtype)})"
@@ -110,33 +135,34 @@ def dns_response(data, addr):
         dns_logs.append(log_entry)
     print(log_entry)
 
-    def create_sinkhole_response(req, qname):
+    def create_sinkhole_response(req, qname_to_block):
         response = message.make_response(req)
         response.set_rcode(0) # NOERROR
-        answer = rrset.from_text(f'{qname}.', 60, 'IN', 'A', CONFIG['SINKHOLE_IP'])
+        answer = rrset.from_text(f'{qname_to_block}.', 60, 'IN', 'A', CONFIG['SINKHOLE_IP'])
         response.answer.append(answer)
         return response.to_wire()
-    # DENYLIST, check BLOCKLIST
-    if qname in DENYLIST:
+    
+    action, matched_domain = is_domain_blocked_hierarchical(qname, DENYLIST, ALLOWLIST, BLOCKLIST)
+    
+    # Initialize log_reason to be used in forwarding
+    log_reason = ""
+    was_blocked = False
+
+    if action == "DENYLIST":
         with stats_lock:
             blocked_queries += 1
-            log_entry = f"{time.strftime('%H:%M:%S')} - DENYLIST BLOCKED: {qname}"
+            log_entry = f"{time.strftime('%H:%M:%S')} - DENYLIST BLOCKED: {qname} (matched {matched_domain})"
             dns_logs.append(log_entry)
         print(log_entry)
         return create_sinkhole_response(request, qname)
 
-    if qname in ALLOWLIST:
-        with stats_lock:
-            log_entry = f"{time.strftime('%H:%M:%S')} - ALLOWED: {qname} (Overriding deny/block lists)"
-            dns_logs.append(log_entry)
-        print(log_entry)
+    if action == "ALLOWLIST":
+        log_reason = f" (matched {matched_domain}, overriding deny/block lists)"
         # Fall through to forwarding logic
-
-    # Check BLOCKLIST (downloaded blocklist)
-    elif qname in BLOCKLIST:
+    elif action == "BLOCKLIST":
         with stats_lock:
             blocked_queries += 1
-            log_entry = f"{time.strftime('%H:%M:%S')} - BLOCKLIST BLOCKED: {qname}"
+            log_entry = f"{time.strftime('%H:%M:%S')} - BLOCKLIST BLOCKED: {qname} (matched {matched_domain})"
             dns_logs.append(log_entry)
         print(log_entry)
         return create_sinkhole_response(request, qname)
@@ -144,13 +170,13 @@ def dns_response(data, addr):
     # Forward the query to the upstream DNS server
     try:
         response = query.udp(request, CONFIG['UPSTREAM_DNS'], timeout=5)
-        log_entry = f"{time.strftime('%H:%M:%S')} - FORWARDED: {qname} to {CONFIG['UPSTREAM_DNS']}"
+        log_entry = f"{time.strftime('%H:%M:%S')} - FORWARDED: {qname} to {CONFIG['UPSTREAM_DNS']}{log_reason}"
         with stats_lock:
             dns_logs.append(log_entry)
         print(log_entry)
         return response.to_wire()
     except exception.Timeout:
-        log_entry = f"{time.strftime('%H:%M:%S')} - TIMEOUT: Forwarding {qname} to {CONFIG['UPSTREAM_DNS']}"
+        log_entry = f"{time.strftime('%H:%M:%S')} - TIMEOUT: Forwarding {qname} to {CONFIG['UPSTREAM_DNS']}{log_reason}"
         with stats_lock:
             dns_logs.append(log_entry)
         print(log_entry)
@@ -158,7 +184,7 @@ def dns_response(data, addr):
         response.set_rcode(2) # SERVFAIL
         return response.to_wire()
     except Exception as e:
-        log_entry = f"{time.strftime('%H:%M:%S')} - ERROR: Forwarding DNS query for {qname}: {e}"
+        log_entry = f"{time.strftime('%H:%M:%S')} - ERROR: Forwarding DNS query for {qname}: {e}{log_reason}"
         with stats_lock:
             dns_logs.append(log_entry)
         print(log_entry)
@@ -216,7 +242,7 @@ def get_logs():
 @app.route('/api/allowlist', methods=['POST'])
 def update_allowlist():
     data = request.get_json()
-    domains = set(data.get('domains', []))
+    domains = set(d.lower() for d in data.get('domains', []))
     with list_lock:
         global ALLOWLIST
         ALLOWLIST = domains
@@ -225,7 +251,7 @@ def update_allowlist():
 @app.route('/api/denylist', methods=['POST'])
 def update_denylist():
     data = request.get_json()
-    domains = set(data.get('domains', []))
+    domains = set(d.lower() for d in data.get('domains', []))
     with list_lock:
         global DENYLIST
         DENYLIST = domains

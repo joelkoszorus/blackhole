@@ -1,6 +1,6 @@
 UPSTREAM_DNS: 8.8.8.8
 SINKHOLE_IP: 0.0.0.0
-BLOCKLIST_URL: "https://github.com/hagezi/dns-blocklists/blob/main/adblock/pro.txt"
+BLOCKLIST_URL: "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt"
 BLOCKLIST_REFRESH_INTERVAL: 3600
 WEB_DASHBOARD_PORT: 8080
 DNS_PORT: 53

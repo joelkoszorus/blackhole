@@ -186,5 +186,130 @@ malicious.net
         self.assertIn("Error downloading blocklist: 404 Not Found", output)
         self.assertEqual(len(main.BLOCKLIST), 0)
 
+    @patch('dns_sinkhole.main.requests.get')
+    @patch('dns_sinkhole.main.query.udp')
+    def test_linkedin_not_blocked_by_default_blocklist(self, mock_udp_query, mock_requests_get):
+        # Arrange
+        test_domain = "linkedin.com"
+        test_domain_abs = test_domain + "."
+        test_ip = "104.110.158.12" # A mock IP for linkedin.com
+
+        # Mock the blocklist download to ensure linkedin.com is NOT in it
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.text = """
+# Clean blocklist, does not contain linkedin.com
+0.0.0.0 example.com
+0.0.0.0 another.org
+        """
+        mock_requests_get.return_value = mock_response
+        main.download_blocklist() # Populate BLOCKLIST with our mocked content
+
+        query_msg = message.make_query(test_domain_abs, rdatatype.A)
+        query_msg.id = 127
+        query_data = query_msg.to_wire()
+        client_addr = ('192.168.1.104', 12349)
+
+        # Mock the upstream DNS response for linkedin.com
+        response_msg = message.make_response(query_msg)
+        answer = rrset.from_text(test_domain_abs, 60, 'IN', 'A', test_ip)
+        response_msg.answer.append(answer)
+        mock_udp_query.return_value = response_msg
+        
+        # Act
+        response_wire = main.dns_response(query_data, client_addr)
+        response_parsed = message.from_wire(response_wire)
+
+        # Assert
+        # Should be forwarded, not blocked
+        mock_udp_query.assert_called_with(query_msg, main.CONFIG['UPSTREAM_DNS'], timeout=5)
+        self.assertNotIn(test_domain, main.BLOCKLIST) # Ensure our mock didn't add it
+        self.assertEqual(str(response_parsed.question[0].name), test_domain_abs)
+        self.assertEqual(str(response_parsed.answer[0][0]), test_ip)
+        self.assertEqual(main.total_queries, 1)
+        self.assertEqual(main.blocked_queries, 0)
+
+    @patch('dns_sinkhole.main.query.udp')
+    def test_subdomain_blocked_by_parent_in_blocklist(self, mock_udp_query):
+        # Arrange
+        main.BLOCKLIST.add("example.com")
+        test_subdomain = "sub.example.com"
+        test_subdomain_abs = test_subdomain + "."
+        query_msg = message.make_query(test_subdomain_abs, rdatatype.A)
+        query_msg.id = 128
+        query_data = query_msg.to_wire()
+        client_addr = ('192.168.1.105', 12350)
+
+        # Act
+        response_wire = main.dns_response(query_data, client_addr)
+        response_parsed = message.from_wire(response_wire)
+
+        # Assert
+        mock_udp_query.assert_not_called()
+        self.assertEqual(str(response_parsed.question[0].name), test_subdomain_abs)
+        self.assertEqual(str(response_parsed.answer[0][0]), main.CONFIG['SINKHOLE_IP'])
+        self.assertEqual(main.total_queries, 1)
+        self.assertEqual(main.blocked_queries, 1)
+        # Verify log message contains the matched parent domain
+        self.assertIn("BLOCKLIST BLOCKED: sub.example.com (matched example.com)", main.dns_logs[-1])
+
+    @patch('dns_sinkhole.main.query.udp')
+    def test_subdomain_allowed_by_parent_in_allowlist(self, mock_udp_query):
+        # Arrange
+        main.BLOCKLIST.add("example.com") # Should be overridden by ALLOWLIST
+        main.ALLOWLIST.add("example.com")
+        test_subdomain = "sub.example.com"
+        test_subdomain_abs = test_subdomain + "."
+        test_ip = "1.2.3.5"
+
+        query_msg = message.make_query(test_subdomain_abs, rdatatype.A)
+        query_msg.id = 129
+        query_data = query_msg.to_wire()
+        client_addr = ('192.168.1.106', 12351)
+
+        response_msg = message.make_response(query_msg)
+        answer = rrset.from_text(test_subdomain_abs, 60, 'IN', 'A', test_ip)
+        response_msg.answer.append(answer)
+        mock_udp_query.return_value = response_msg
+
+        # Act
+        response_wire = main.dns_response(query_data, client_addr)
+        response_parsed = message.from_wire(response_wire)
+
+        # Assert
+        mock_udp_query.assert_called_with(query_msg, main.CONFIG['UPSTREAM_DNS'], timeout=5)
+        self.assertEqual(str(response_parsed.question[0].name), test_subdomain_abs)
+        self.assertEqual(str(response_parsed.answer[0][0]), test_ip)
+        self.assertEqual(main.total_queries, 1)
+        self.assertEqual(main.blocked_queries, 0)
+        self.assertIn("FORWARDED: sub.example.com to 1.1.1.1 (matched example.com, overriding deny/block lists)", main.dns_logs[-1])
+
+    @patch('dns_sinkhole.main.query.udp')
+    def test_subdomain_denied_by_parent_in_denylist(self, mock_udp_query):
+        # Arrange
+        main.BLOCKLIST.add("example.com")
+        main.ALLOWLIST.add("example.com") # Should be overridden by DENYLIST
+        main.DENYLIST.add("example.com")
+        test_subdomain = "sub.example.com"
+        test_subdomain_abs = test_subdomain + "."
+        
+        query_msg = message.make_query(test_subdomain_abs, rdatatype.A)
+        query_msg.id = 130
+        query_data = query_msg.to_wire()
+        client_addr = ('192.168.1.107', 12352)
+
+        # Act
+        response_wire = main.dns_response(query_data, client_addr)
+        response_parsed = message.from_wire(response_wire)
+
+        # Assert
+        mock_udp_query.assert_not_called()
+        self.assertEqual(str(response_parsed.question[0].name), test_subdomain_abs)
+        self.assertEqual(str(response_parsed.answer[0][0]), main.CONFIG['SINKHOLE_IP'])
+        self.assertEqual(main.total_queries, 1)
+        self.assertEqual(main.blocked_queries, 1)
+        self.assertIn("DENYLIST BLOCKED: sub.example.com (matched example.com)", main.dns_logs[-1])
+
 if __name__ == '__main__':
     unittest.main()
+        
